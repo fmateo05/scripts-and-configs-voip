@@ -1,0 +1,2 @@
+curl 10.0.0.130:5984/_all_dbs | tr  "," " "  | tr "[]" " "  | tr " " "\n" | tr '"' " " | sed -e s///%2F/ | sed -e s/+/%2B/
+curl 10.0.0.130:5984/_all_dbs | tr  "," " "  | tr "[]" " "  | tr " " "\n" | sed s/"//g | sed -e s///%2F/  | sed -e s/+/%2B/
