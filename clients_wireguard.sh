@@ -1,11 +1,16 @@
 #!/bin/bash
 umask 077
-declare -a PRKEY
-declare -a PBKEY
+declare -ga PRKEY
+declare -ga PBKEY
 export DIR="server_profile"
 export SRV_FILE="wg0.conf"
 export IP_ADDR="192.168.10"
-export PEER="$2"
+export PEER="${2}"
+export NUMBER="${1}"
+#export a=0
+#export b=0
+#KEY="`wg genkey`"
+#PUBKEY="`echo  $KEY | wg pubkey`"
 
 function header_server(){
 if [ ! -d "$DIR" ]; then 
@@ -13,76 +18,77 @@ if [ ! -d "$DIR" ]; then
 mkdir $DIR
 
 fi
-
-
-echo   '[Interface]' > $DIR/$SRV_FILE
-echo   "Address = ${IP_ADDR}.254/24" >> $DIR/$SRV_FILE
-echo   "SaveConfig = false" >> $DIR/$SRV_FILE
-echo   "ListenPort = 1194" >> $DIR/$SRV_FILE
-echo   "PrivateKey = ${PRKEY[0]}" >> $DIR/$SRV_FILE
-
+if [ ! -f "$DIR/$SRV_FILE" ] ; then
+cat << EOF | tee  $DIR/$SRV_FILE 
+[Interface]
+Address = ${IP_ADDR}.254/24
+SaveConfig = false
+ListenPort = 1194
+PrivateKey = ${PRKEY[1]}
+EOF
+else
+echo 111
+fi
 }
 
 function server_profile(){
-#let "a=$a+1"
-#echo -n "[Peer]" >> $DIR/$SRV_FILE
-#echo -n "PublicKey =" >> $DIR/$SRV_FILE
 
-echo  "[Peer]" >> $DIR/$SRV_FILE
-echo  "PublicKey = ${PBKEY[$a]}" >> $DIR/$SRV_FILE
-echo  "AllowedIPs = ${IP_ADDR}.${a}/32" >> $DIR/$SRV_FILE
-
+cat << EOF | tee -a  $DIR/$SRV_FILE 
+[Peer]
+PublicKey = ${PBKEY[a]}
+AllowedIPs = ${IP_ADDR}.$a/32
+EOF
 }
 
 function client_profile() {
 export CLDIR="client_profiles"
 export FILE="wg-client$a.conf"
-
 if [ ! -d "$CLDIR" ]; then
 mkdir $CLDIR
 
 fi
-echo   "[Interface]" > $CLDIR/$FILE
-echo   "Address = ${IP_ADDR}.$a/32" >> $CLDIR/$FILE
-echo  "PrivateKey = ${PRKEY[$a]}" >> $CLDIR/$FILE
-echo   "DNS = 208.67.222.222" >> $CLDIR/$FILE
-#echo -n  "" >> $CLDIR/$FILE
-echo  "[Peer]" >> $CLDIR/$FILE
-echo  "PublicKey = ${PBKEY[$a]}" >> $CLDIR/$FILE
-echo  "Endpoint = ${PEER}:1194"  >> $CLDIR/$FILE
-echo  "AllowedIPs = 0.0.0.0/0" >> $CLDIR/$FILE
-echo  "PersistentKeepalive = 21" >> $CLDIR/$FILE
 
+#let "z=z+1"
+cat  << EOF | tee  $CLDIR/$FILE 
+[Interface]
+Address = ${IP_ADDR}.$a/32
+PrivateKey = ${PRKEY[$a]}
+DNS = 208.67.222.222
+[Peer]
+PublicKey = ${PBKEY[1]}
+Endpoint = ${PEER}:1194
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 21
+EOF
 }
 
-for ((c=0; c<1 ;c++))
-do
-KEY="`wg genkey`"
-PUBKEY="`echo -n $KEY | wg pubkey`"
-PRKEY[$a]=$KEY
-PBKEY[$a]=$PUBKEY
-
+function exec_all() {
 header_server
+server_profile
+client_profile
+}
 
-
-done
-
-a=1
-while [[ $a -lt ${1} ]]
-
-do
-KEY="`wg genkey`"
-PUBKEY="`echo -n $KEY | wg pubkey`"
-PRKEY[$a]=$KEY
-PBKEY[$a]=$PUBKEY
-
-
-
+function exec_clients(){
 server_profile
 client_profile
 
-# echo ${PRKEY[$a]}
-# echo ${PBKEY[$a]}
+}
 
+
+
+function generate_keys() {
+
+a=1
+while [[ $a -le ${NUMBER} ]]
+do
+PRKEY[$a]="`wg genkey`"
+PBKEY[$a]="`echo -n ${PRKEY[$a]} | wg pubkey`"
+
+header_server
+server_profile
+client_profile
 let "a++"
+
 done
+}
+generate_keys
