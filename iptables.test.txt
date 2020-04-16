@@ -1,0 +1,38 @@
+iptables -P INPUT DROP
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT DROP
+
+iptables -A INPUT -m conntrack --ctstate NEW,RELATED,ESTABLISHED -j ACCEPT
+iptables -A INPUT -i lo -j  ACCEPT
+iptables -A INPUT -s 10.8.0.0/24 -d 10.8.0.254/32 -p tcp -m tcp --dport 80 -j ACCEPT
+iptables -A INPUT -s 10.8.0.0/24 -d 10.8.0.254/32 -p tcp -m tcp --dport 443 -j ACCEPT
+iptables -A INPUT -s 10.8.0.0/24 -d 10.8.0.254/32 -p tcp -m tcp --dport 8082 -j ACCEPT
+iptables -A INPUT -s 10.8.0.0/24 -d 10.8.0.254/32 -p tcp -m tcp --dport 53 -j ACCEPT
+iptables -A INPUT -s 10.8.0.0/24 -d 10.8.0.254/32 -p udp -m udp --dport 53 -j ACCEPT
+iptables -A INPUT -s 10.8.0.0/24 -d 10.8.0.254/32 -p udp -m udp --dport 16384:32768 -j ACCEPT
+iptables -A INPUT -i eth0 -p udp -m udp --dport 1194 -m conntrack --ctstate NEW -j ACCEPT
+iptables -A INPUT -i eth0 -p tcp -m tcp  --dport 49156  -j ACCEPT
+iptables -A INPUT -i eth0  -p tcp -m tcp  --dport 445  -j ACCEPT
+iptables -A INPUT -i eth0  -p tcp -m tcp  --dport 139  -j ACCEPT
+
+
+iptables -A OUTPUT -o lo -j  ACCEPT
+
+iptables -A OUTPUT -o eth0 -p tcp -m tcp --sport 49156   -j ACCEPT
+iptables -A OUTPUT -o eth0  -p tcp -m tcp  --sport 445  -j ACCEPT
+iptables -A OUTPUT -o eth0  -p tcp -m tcp  --sport 139  -j ACCEPT
+iptables -A OUTPUT -o eth0  -p udp -m udp -j ACCEPT
+iptables -A OUTPUT -p icmp -j ACCEPT
+
+iptables -A OUTPUT -o wg+ -p tcp -m tcp --sport 49156   -j ACCEPT
+iptables -A OUTPUT -o wg+   -p tcp -m tcp  --sport 8082  -j ACCEPT
+iptables -A OUTPUT -o wg+  -p udp -m udp   -j ACCEPT
+
+
+iptables -t nat -A PREROUTING -s 10.8.0.0/24 -i wg+ -p tcp -m tcp --dport 80 -j DNAT --to-destination 10.8.0.254:80
+iptables -t nat -A PREROUTING -s 10.8.0.0/24 -i wg+ -p tcp -m tcp --dport 443 -j DNAT --to-destination 10.8.0.254:443
+iptables -t nat -A PREROUTING -s 10.8.0.0/24 -i wg+ -p tcp -m tcp -d 0/0 --dport 8082 -j DNAT --to-destination 10.8.0.254:8082
+iptables -t nat -A PREROUTING -s 10.8.0.0/24 -i wg+ -p tcp -m tcp --dport 53 -j DNAT --to-destination 10.8.0.254:53
+iptables -t nat -A PREROUTING -s 10.8.0.0/24 -i wg+ -p udp -m udp --dport 53 -j DNAT --to-destination 10.8.0.254:53
+iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE
+
