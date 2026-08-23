@@ -1,0 +1,10 @@
+https://www.pbxforums.com/threads/fusionpbx-gateway-to-gateway-calls.3916/
+
+
+An alternative way would be to register the other pbx as an extension. Then any outbound calls from that pbx would be treated to the typical dial plans in the domain it is registered in.
+For routing DID's from the carrier to the "extension"(other pbx) use the following example bridge statement as the destination.
+sofia/internal/sip:$1${regex(${sofia_contact(1111111@my.pbx.net)}|^[^@]+(.*)|%1)}
+In this example, the other pbx is registered as extension "1111111" at domain "my.pbx.net"
+The regex in the bridge statement will change the "to" address to match the inbound digits.
+
+This is the method I use for serving "sip trunks" to other pbx's
