@@ -4,6 +4,7 @@ import time
 from fastapi import Body, FastAPI, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+import re
 
 app = FastAPI(redirect_slashes=False)
 print("¡La API se está ejecutando aquí!")
@@ -193,7 +194,7 @@ def get_random_mdn() -> str:
 #async def activate_or_create_device(account_id: str, payload: dict = Body(...)):
 #    assigned_mdn = payload.get("mdn") or generate_random_mdn()
 #    assigned_esn = payload.get("esn") or generate_random_esn()
-    
+
     # Manejar si el payload trae id (actualización) o crear uno nuevo
 #    device_id = payload.get("id") or f"dev_{random.randint(100000, 999999)}"
 #    clean_mdn = assigned_mdn.replace("+", "")
@@ -394,29 +395,117 @@ async def get_locality_coverage(zip_code: str, request: Request):
         return {}
 
     # Respuesta mock de cobertura que espera la interfaz de Monster UI
+    # Estructura enriquecida con mapeo directo para Monster UI
     return {
         "status": "success",
         "data": {
-            "zip_code": zip_code,
-            "coverage": True,
-            "networks": [
-                {
-                    "name": "5G Ultra Wideband",
-                    "status": "available",
-                    "signal_strength": "excellent",
-                },
-                {
-                    "name": "4G LTE",
-                    "status": "available",
-                    "signal_strength": "excellent",
-                },
-            ],
-            "locality": "Santo Domingo",
-            "state": "SD",
-            "coordinates": {"lat": 18.4861, "lng": -69.9312}
+            "country": "US",
+            "geocode": [{
+                "locality": "California"
+            }],
+            "locality": [{
+                "locality": "Santo Domingo",
+                "province": "SD",
+                "postal_code": zip_code,
+                "alt_postal_codes": ["11518", "11520"],
+                "latitude": "18.4861",
+                "longitude": "-69.9312",
+                "type": "WIRELESS",
+                "switch": "SDOMDOXGT0"
+            }],
+            "carrier": [{
+                "company": "BeVoIP Mobile Network",
+                "dba": "BeVoIP",
+                "id": "829E",
+                "type": "WIRELESS"
+            }],
+            "status": "success"
         }
     }
 
-# if __name__ == "__main__":
-#    import uvicorn
-#    uvicorn.run("kazoo_mobile_mock_api:app", host="0.0.0.0", port=5000, reload=True)
+# Helper para normalizar el ID del documento / DID
+def clean_phone_number(num_str: str) -> str:
+    if not num_str:
+        return "+18295550101"
+    cleaned = re.sub(r"[^\d+]", "", num_str)
+    if not cleaned.startswith("+"):
+        cleaned = f"+{cleaned}" if len(cleaned) == 11 else f"+1{cleaned}"
+    return cleaned
+
+@app.options("/locality/metadata")
+@app.options("/v2/locality/metadata")
+@app.options("/accounts/{account_id}/locality/metadata")
+@app.options("/v2/accounts/{account_id}/locality/metadata")
+@app.get("/locality/metadata")
+@app.get("/v2/locality/metadata")
+@app.get("/accounts/{account_id}/locality/metadata")
+@app.get("/v2/accounts/{account_id}/locality/metadata")
+@app.post("/locality/metadata")
+@app.post("/v2/locality/metadata")
+@app.post("/accounts/{account_id}/locality/metadata")
+@app.post("/v2/accounts/{account_id}/locality/metadata")
+async def get_locality_metadata(request: Request, account_id: str = "undefined"):
+    # 1. Extraer payload si la petición es POST
+    body_data = {}
+    if request.method == "POST":
+        try:
+            body_data = await request.json()
+        except Exception:
+            body_data = {}
+
+    if request.method == "OPTIONS":
+        return JSONResponse(
+            content={},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+            },
+        )
+
+    # 2. Obtener el ID del número/documento desde el request (data.id, data.number, o query string)
+    req_data = body_data.get("data", {})
+    doc_id = (
+        req_data.get("id") or
+        req_data.get("number") or
+        request.query_params.get("number") or
+        "+18295550101"
+    )
+    doc_id = clean_phone_number(doc_id)
+
+    # 3. Retornar el esquema que satisface knm_other y cb_phone_numbers_v2
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "success",
+            "data": {
+                # Provee la clave indexada para evitar el 'empty_doc_id'
+                doc_id: {
+                    "id": doc_id,
+                    "number": doc_id,
+                    "carrier": {
+                        "company": "BeVoIP / KNM Other",
+                        "module": "knm_other"
+                    },
+                    "locality": {
+                        "locality": "Santo Domingo",
+                        "province": "SD",
+                        "postal_code": "11519",
+                        "country": "DO",
+                        "latitude": "18.4861",
+                        "longitude": "-69.9312"
+                    }
+                },
+                "provider": "knm_other",
+                "locality": {
+                    "locality": "Santo Domingo",
+                    "province": "SD",
+                    "postal_code": "11519",
+                    "country": "DO"
+                }
+            },
+            "auth_token": request.headers.get("x-auth-token", ""),
+            "request_id": request.headers.get("x-request-id", "mock-req-id"),
+            "revision": "1.0"
+        }
+    )
