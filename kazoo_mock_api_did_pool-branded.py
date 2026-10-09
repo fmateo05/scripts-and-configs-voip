@@ -316,7 +316,6 @@ def generate_fresh_unique_mdn(used_set: set) -> str:
         if candidate not in used_set and candidate.replace("+", "") not in used_set:
             return candidate
 
-
 @app.post("/v2/accounts/{account_id}/devices")
 @app.put("/v2/accounts/{account_id}/devices")
 @app.post("/accounts/{account_id}/devices/activate")
@@ -324,106 +323,137 @@ def generate_fresh_unique_mdn(used_set: set) -> str:
 async def activate_or_create_device(
     account_id: str, request: Request, payload: dict = Body(...)
 ):
-    device_id = payload.get("id") or f"dev_mob_{random.randint(1000, 9999)}"
     headers = {
-        k: v for k, v in request.headers.items()
+        k: v
+        for k, v in request.headers.items()
         if k.lower() in ["x-auth-token", "authorization", "content-type"]
     }
 
-    assigned_mdn = payload.get("mdn")
+    # Extractor defensivo si el payload viene envuelto en {"data": {...}}
+    incoming_data = payload.get("data", payload) if isinstance(payload, dict) else payload
 
-    # -------------------------------------------------------------------
-    # 1. BÚSQUEDA AUTOMÁTICA EN KAZOO VÍA LOCALITY / PHONE_NUMBERS SEARCH
-    # -------------------------------------------------------------------
-    if not assigned_mdn:
-        # Extraer el código postal o área predeterminada (ej. 829/809)
-        postal_code = payload.get("postal_code", "11519")
-        search_prefix = "829"  # Puedes mapear el postal_code a un prefijo de área aquí
+    # Determinar el tipo de dispositivo que la interfaz intenta crear
+    raw_device_type = (
+        incoming_data.get("device_type")
+        or incoming_data.get("type")
+        or "mobile"
+    )
+    device_type = str(raw_device_type).lower()
 
-        try:
-            async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
-                print(f"[Locality Search] Buscando DIDs disponibles con prefijo {search_prefix}...")
+    device_id = (
+        incoming_data.get("id")
+        or payload.get("id")
+        or f"dev_{random.randint(1000, 9999)}"
+    )
 
-                # Búsqueda de números disponibles en Kazoo
-                search_url = f"{KAZOO_REAL_API}/v2/accounts/{account_id}/phone_numbers/search?prefix={search_prefix}&quantity=1"
-                resp = await client.get(search_url, headers=headers)
+    # =========================================================================
+    # RAMA A: DISPOSITIVOS MÓVILES (Procesamiento de ESN, DID, Throttling, etc.)
+    # =========================================================================
+    if device_type == "mobile":
+        assigned_mdn = incoming_data.get("mdn")
 
-                if resp.status_code == 200:
-                    found_numbers = resp.json().get("data", [])
-                    if isinstance(found_numbers, list) and len(found_numbers) > 0:
-                        candidate_did = found_numbers[0].get("number") or found_numbers[0]
-                        print(f"[Locality Search] DID encontrado en Kazoo: {candidate_did}")
+        # 1. Búsqueda de DID vía Locality / Phone Numbers Search
+        if not assigned_mdn:
+            postal_code = incoming_data.get("postal_code", "11519")
+            search_prefix = "829"
 
-                        # Opcional: Auto-asignar / comprar el DID en Kazoo si es necesario
-                        assign_resp = await client.put(
-                            f"{KAZOO_REAL_API}/v2/accounts/{account_id}/phone_numbers/{candidate_did}",
-                            json={"data": {}},
-                            headers=headers
-                        )
-                        if assign_resp.status_code in [200, 201]:
-                            assigned_mdn = candidate_did
-                            print(f"[Locality Reserve] DID {candidate_did} reservado exitosamente en la cuenta.")
-        except Exception as e:
-            print(f"[Locality Search Fallback] Error durante la búsqueda en Kazoo: {e}")
+            try:
+                async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
+                    print(f"[Locality Search] Buscando DIDs con prefijo {search_prefix}...")
+                    search_url = f"{KAZOO_REAL_API}/v2/accounts/{account_id}/phone_numbers/search?prefix={search_prefix}&quantity=1"
+                    resp = await client.get(search_url, headers=headers)
 
-    # -------------------------------------------------------------------
-    # 2. FALLBACK A LA BASE DE DATOS LOCAL (SQLite) O GENERADOR ALEATORIO
-    # -------------------------------------------------------------------
-    if not assigned_mdn:
-        assigned_mdn = pop_available_did(device_id)
-        if assigned_mdn:
-            print(f"[SQLite Pool] DID seleccionado de la BD local: {assigned_mdn}")
+                    if resp.status_code == 200:
+                        found_numbers = resp.json().get("data", [])
+                        if isinstance(found_numbers, list) and len(found_numbers) > 0:
+                            candidate_did = found_numbers[0].get("number") or found_numbers[0]
+                            print(f"[Locality Search] DID encontrado: {candidate_did}")
 
-    if not assigned_mdn:
-        used_mdns = {d.get("mdn") for d in devices_db.values() if d.get("mdn")}
-        assigned_mdn = generate_fresh_unique_mdn(used_mdns)
-        print(f"[Random Fallback] DID generado aleatoriamente: {assigned_mdn}")
+                            assign_resp = await client.put(
+                                f"{KAZOO_REAL_API}/v2/accounts/{account_id}/phone_numbers/{candidate_did}",
+                                json={"data": {}},
+                                headers=headers,
+                            )
+                            if assign_resp.status_code in [200, 201]:
+                                assigned_mdn = candidate_did
+                                print(f"[Locality Reserve] DID {candidate_did} reservado.")
+            except Exception as e:
+                print(f"[Locality Search Fallback] Error en búsqueda Kazoo: {e}")
 
-    # -------------------------------------------------------------------
-    # 3. CREACIÓN Y APROVISIONAMIENTO DEL DISPOSITIVO
-    # -------------------------------------------------------------------
-    clean_mdn = assigned_mdn.replace("+", "")
-    assigned_esn = payload.get("esn") or generate_random_esn()
-    postassigned_esn = payload.get("esn")
-    device_info = get_device_info_from_imei(assigned_esn)
-    manufacturer = device_info["manufacturer"]
-    device_model = device_info["name"]
-    custom_name = payload.get("name") or f"{manufacturer} {device_model}"
+        # 2. Fallbacks de DID (SQLite local o generador)
+        if not assigned_mdn:
+            assigned_mdn = pop_available_did(device_id)
+            if assigned_mdn:
+                print(f"[SQLite Pool] DID asignado: {assigned_mdn}")
 
-    device_payload = {
-#       "name": payload.get("name", f"Dispositivo {clean_mdn[-4:]}"),
-        "name": custom_name ,
-        "id": assigned_esn ,
-        "device_type": "mobile",
-        "enabled": True,
-        "mdn": clean_mdn,
-        "esn": assigned_esn,
-        "postal_code": payload.get("postal_code", "11519"),
-        "mobile": {
-            "id": device_id,
-            "mdn": assigned_mdn,
+        if not assigned_mdn:
+            used_mdns = {d.get("mdn") for d in devices_db.values() if d.get("mdn")}
+            assigned_mdn = generate_fresh_unique_mdn(used_mdns)
+            print(f"[Random Fallback] DID asignado: {assigned_mdn}")
+
+        # 3. Construcción del payload Móvil
+        clean_mdn = assigned_mdn.replace("+", "")
+        assigned_esn = incoming_data.get("esn") or generate_random_esn()
+        device_info = get_device_info_from_imei(assigned_esn)
+        manufacturer = device_info["manufacturer"]
+        device_model = device_info["name"]
+        custom_name = incoming_data.get("name") or f"{manufacturer} {device_model}"
+
+        device_payload = {
+            "name": custom_name,
+            "id": assigned_esn,
+            "device_type": "mobile",
+            "enabled": True,
+            "mdn": clean_mdn,
             "esn": assigned_esn,
-        },
-        "subscription": {
-            "mdn": assigned_mdn,
-            "esn": assigned_esn,
-            "features": payload.get("subscription", {}).get("features", ["mms", "tethering"]),
-            "suspended": False,
-        },
-        "model": payload.get("model", {"manufacturer": manufacturer, "name": custom_name, "number": "14"}),
-        "data": payload.get("data", {
-            "blocking": {"cap": 10000000000},
-            "throttling": {"cap": 8000000000, "rate": "128k"},
-        }),
-        "voice": payload.get("voice", {
-            "sip": {
-                "realm": "ims.mnc001.mcc370.3gppnetwork.org",
-                "username": f"user_{clean_mdn[-6:]}",
-                "password": "secretpassword",
-            }
-        }),
-    }
+            "postal_code": incoming_data.get("postal_code", "11519"),
+            "mobile": {
+                "id": device_id,
+                "mdn": assigned_mdn,
+                "esn": assigned_esn,
+            },
+            "subscription": {
+                "mdn": assigned_mdn,
+                "esn": assigned_esn,
+                "features": incoming_data.get("subscription", {}).get(
+                    "features", ["mms", "tethering"]
+                ),
+                "suspended": False,
+            },
+            "model": incoming_data.get(
+                "model",
+                {"manufacturer": manufacturer, "name": custom_name, "number": "14"},
+            ),
+            "data": incoming_data.get(
+                "data",
+                {
+                    "blocking": {"cap": 10000000000},
+                    "throttling": {"cap": 8000000000, "rate": "128k"},
+                },
+            ),
+            "voice": incoming_data.get(
+                "voice",
+                {
+                    "sip": {
+                        "realm": "ims.mnc001.mcc370.3gppnetwork.org",
+                        "username": f"user_{clean_mdn[-6:]}",
+                        "password": "secretpassword",
+                    }
+                },
+            ),
+        }
 
+    # =========================================================================
+    # RAMA B: DISPOSITIVOS NO-MÓVILES (SIP, Softphones, Teléfonos de Escritorio)
+    # =========================================================================
+    else:
+        print(f"[Device Router] Procesando dispositivo NO-MÓVIL de tipo '{device_type}'")
+        # Pasa la carga útil intacta tal cual viene de Monster UI para no romper las claves nativas de SIP
+        device_payload = incoming_data.copy()
+
+    # =========================================================================
+    # REENVÍO/PERSISTENCIA EN KAZOO REAL
+    # =========================================================================
     created_device_data = None
     try:
         async with httpx.AsyncClient(verify=False, timeout=8.0) as client:
@@ -434,6 +464,8 @@ async def activate_or_create_device(
             )
             if resp.status_code in [200, 201]:
                 created_device_data = resp.json().get("data", device_payload)
+            else:
+                print(f"[Kazoo API Error {resp.status_code}]: {resp.text}")
     except Exception as e:
         print(f"[Proxy PUT Fallback] No se pudo conectar a Kazoo Real: {e}")
 
@@ -445,7 +477,6 @@ async def activate_or_create_device(
     devices_db[real_device_id] = created_device_data
 
     return {"status": "success", "data": created_device_data}
-
 
 @app.put("/v2/accounts/{account_id}/callflows")
 @app.post("/v2/accounts/{account_id}/callflows")
